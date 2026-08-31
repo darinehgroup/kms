@@ -1,0 +1,59 @@
+# CI for the KMS: tests and a cross-compile check. NO DEPLOY, deliberately.
+#
+# The KMS is installed by hand on its own server, as a two-person ceremony
+# (README "First-time setup"). A pipeline with credentials to that host would
+# defeat the point, so this workflow only ever reads code and runs tests.
+#
+# It needs no secrets: the automatic GITHUB_TOKEN can read the repo the
+# workflow lives in, and nothing here touches another repository. The KMS has
+# no cross-repo dependencies -- unlike app-server, it does not `replace` any
+# sibling module.
+
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Read-only token: this workflow never writes anything back.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: go vet
+        run: go vet ./...
+
+      # Covers the parts that must not regress silently: the audit hash chain,
+      # KEK wrap/unwrap, TOTP validation and the per-company rate limiter.
+      # Race detection matters here -- the keyring is shared mutable state
+      # between the data plane and the admin plane.
+      - name: go test
+        run: go test -race ./...
+
+      # The server binary is built on an admin workstation and scp'd across, so
+      # a break in the linux/amd64 build would otherwise surface at deploy time,
+      # in the middle of a ceremony. Catch it here instead.
+      #
+      # CGO_ENABLED=0 is not incidental: modernc.org/sqlite is pure Go, and the
+      # resulting static binary is what lets the KMS host stay minimal.
+      - name: cross-compile for the server target
+        run: |
+          make linux
+          file bin/kms-linux-amd64
+          # Fail loudly if it ever stops being static -- a dynamically linked
+          # binary would drag glibc onto the KMS host.
+          file bin/kms-linux-amd64 | grep -q 'statically linked' \
+            || { echo "ERROR: binary is not statically linked"; exit 1; }

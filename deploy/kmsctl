@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# kmsctl — run a kms CLI command as the kms user with the service's environment.
+#
+# Install: install -m 0755 deploy/kmsctl /usr/local/bin/kmsctl
+# Usage:   sudo kmsctl status | unseal | seal | rotate-kek | set-totp --label X | ...
+#
+# Why this exists:
+#   1. The admin socket is 0600 kms:kms, so every admin command must run AS the
+#      kms user — plain `kms unseal` from your own shell just gets EACCES.
+#   2. config.FromEnv() runs before command dispatch, so the CLI needs the same
+#      environment the service has. Sourcing /etc/kms/kms.env keeps them identical.
+set -euo pipefail
+
+ENV_FILE=${KMS_ENV_FILE:-/etc/kms/kms.env}
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo "kmsctl: must be run as root (use sudo)" >&2
+	exit 1
+fi
+if [ ! -r "$ENV_FILE" ]; then
+	echo "kmsctl: cannot read $ENV_FILE" >&2
+	exit 1
+fi
+
+# `set -a` exports everything the file defines; the subshell keeps it out of the
+# caller's environment. Comments and blank lines are ignored by the shell itself,
+# so no filtering is needed.
+set -a
+# shellcheck disable=SC1090
+. "$ENV_FILE"
+set +a
+
+exec setpriv --reuid=kms --regid=kms --init-groups --inh-caps=-all -- \
+	/usr/local/bin/kms "$@"

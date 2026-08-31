@@ -1,0 +1,75 @@
+# Finomix internal KMS — systemd unit (design.md §10/§12).
+#
+# Install:
+#   useradd --system --home /var/lib/kms --shell /usr/sbin/nologin kms
+#   install -d -o kms -g kms -m 0700 /var/lib/kms      # `kms init` runs BEFORE the
+#                                                      # first start, as the kms user,
+#                                                      # and /var/lib is root-owned 0755 —
+#                                                      # StateDirectory= happens too late.
+#   install -d -o root -g kms -m 0750 /etc/kms         # PKI + kms.env live here
+#   cp kms.service /etc/systemd/system/
+#   cp kms.env.example /etc/kms/kms.env && edit it     # see that file
+#   systemctl daemon-reload
+#   sudo -u kms kms init                               # two founders — THEN:
+#   systemctl enable --now kms                         # comes up SEALED
+#   sudo -u kms kms unseal                             # two founders again
+#
+# Configuration lives in /etc/kms/kms.env rather than in inline Environment=
+# lines so the service and the interactive CLI share one source of truth. The
+# CLI must run as the kms user to reach the 0600 admin socket, and config.FromEnv()
+# runs before command dispatch — so a value that is wrong here breaks even `status`.
+
+[Unit]
+Description=Finomix internal KMS (envelope encryption key service)
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=simple
+User=kms
+Group=kms
+ExecStart=/usr/local/bin/kms serve
+Restart=on-failure
+RestartSec=2
+
+# Paths (systemd creates these with the right ownership)
+StateDirectory=kms
+StateDirectoryMode=0700
+RuntimeDirectory=kms
+RuntimeDirectoryMode=0700
+
+EnvironmentFile=/etc/kms/kms.env
+
+# Keep key material out of swap (KMS_MLOCK=1 calls mlockall).
+# NOTE: an mlock failure is logged as a WARNING and does NOT stop startup, so a
+# wrong limit silently leaves keys swappable. After every start, check:
+#   journalctl -u kms | grep -i 'mlock failed'
+LimitMEMLOCK=infinity
+MemoryDenyWriteExecute=yes
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+# All three families are required: AF_INET/AF_INET6 for the mTLS data plane and
+# AF_UNIX for the admin socket. Dropping AF_UNIX silently breaks every admin
+# command, including unseal.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# Zero capabilities — this is why KMS_LISTEN_ADDR must use a port >= 1024.
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/kms
+ReadOnlyPaths=/etc/kms
+
+[Install]
+WantedBy=multi-user.target

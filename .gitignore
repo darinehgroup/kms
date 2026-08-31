@@ -1,0 +1,7 @@
+# Build output. The KMS binary is built per-target with `make linux`
+# and shipped to the server manually — never committed (a stale macOS
+# build in here is an easy way to scp an unrunnable binary to Linux).
+bin/
+
+# local tooling / OS junk
+.DS_Store
